@@ -1,19 +1,23 @@
 ﻿namespace LPCcoder
 {
+    using Microsoft.VisualBasic;
     using NAudio.Wave;
+    using System.Linq.Expressions;
+    using static System.Runtime.InteropServices.JavaScript.JSType;
+
     internal class Program
     {
         
         static void Main(string[] args)
         {
             LPC lpc = new();
-            lpc.StartHere("siffror.wav");
+            lpc.StartHere("testmening3.wav");
         }
     }
     
     public class LPC
     {
-        public const int LpcSigSIZE = 512;
+        const string FileName = "Result.wav";
         public float[] ReadWav(string filename)
         {
             AudioFileReader reader = new AudioFileReader(filename);
@@ -74,13 +78,14 @@
             return lpcCoefficients;
         }
 
-        public void PerformLPCAnalysis(float[] frame, int order, float[] lpcCoeffs, float[] autocorr, float[] reflectionCoeffs)
+        public static void PerformLPCAnalysis(float[] frame, int order, float[] lpcCoeffs, float[] autocorr, float[] reflectionCoeffs)
         {
+            var frameSize = frame.Length;
             // Step 1: Calculate the autocorrelation coefficients
             for (int k = 0; k <= order; k++)
             {
                 float sum = 0.0f;
-                for (int n = 0; n < LpcSigSIZE - k; n++)
+                for (int n = 0; n < frameSize - k; n++)
                 {
                     sum += frame[n] * frame[n + k];
                 }
@@ -157,42 +162,82 @@
             return input.Skip(index).ToArray();
         }
 
-        public void Synthesize(List<float> coffs)
+        public void Synthesize(List<float[]> coffs, int lengthMultiplicator, int Order)
         {
+            var rand = new Random();
+            int sampleRate = 44100;
+            int VoicePitch = 30;
+            int count = 0;
+            float[] k = new float[Order];
+            float[] bp = new float[Order];
+            int offset = 0;
+            int MaxOrder = Order;
+            //float phase = 0;
+            //float fTablesize = 512;
+            float sampling_period = 0.00002267573696f;
+            WaveFormat waveFormat = new WaveFormat();
+            using (WaveFileWriter writer = new WaveFileWriter(FileName, waveFormat))
+            {
+                foreach (var co in coffs)
+                {
+                    int rate = (int)(1.0f / sampling_period); 
+                    int samples_per_frame = (int)(0.005 / sampling_period);
+                    for (int smp = 0; smp < samples_per_frame * lengthMultiplicator; smp++)
+                    {
+                        // https://github.com/bisqwit/speech_synth_series/blob/master/ep4-speechsyn/pcmaudio-lpc-wav.cc
 
+                        //// Generate buzz, at the specified voice pitch
+                        count++;
+                        float w = (float)(count %= rate / VoicePitch) / (rate / VoicePitch);
+
+                        float pt = (float)Math.Pow(2.0, w);
+                        float f = (float)(pt - 1 / (1 + w)); // -0.5  + rand.NextDouble()) * 0.5  + pt - 1 / (1 + w)
+
+                        // Apply the filter (LPC coefficients)
+                        float sum = f;
+                        for (int j = 0; j < Order; j++)
+                        {
+                            int indx = (offset + MaxOrder - j) % MaxOrder;
+                            sum -= (co[j]) * bp[indx];
+                        }
+
+                        // Save it into a rolling buffer
+                        offset++;
+                        int index = offset %= MaxOrder;
+                        float r = bp[index] = sum;
+                        writer.WriteSample(r);
+                    }
+                    
+                }
+            }
         }
 
         public void StartHere(string filePath)
         {
+            int FrameLength = 2048;
             float[] rawSignal = ReadWav(filePath);
             float[] signal = CleanUp(rawSignal);
-            int order = 10; // LPC order
-            float[] lpcCoeffs = new float[17];
-            float[] autocorr = new float[17];
-            float[] reflectionCoeffs = new float[17];
+            int order = 20; // LPC order
+            
             //float[] lpcCoefficients = CalculateLPC(signal, order);
-            var (frames,volume) = CreateFrames(signal, 512);
-            
-            foreach(var fr in frames)
+            var (frames,volume) = CreateFrames(signal, FrameLength);
+            List<float[]> coffs = new();
+            foreach (var fr in frames)
             {
-                PerformLPCAnalysis(fr, 10, lpcCoeffs, autocorr, reflectionCoeffs);
-                for (int z = 0; z < 17; z++)
-                {
-                    Console.WriteLine($"{fr[z]} - {lpcCoeffs[z]} - {autocorr[z]} - {reflectionCoeffs[z]}");
-
-                }
-                Console.ReadKey();
+                float[] lpcCoeffs = new float[order+1];
+                float[] autocorr = new float[order + 1];
+                float[] reflectionCoeffs = new float[order + 1];
+                PerformLPCAnalysis(fr, order, lpcCoeffs, autocorr, reflectionCoeffs);
+                var lpcCoeffs2 = lpcCoeffs.Skip(1).
+                    Take(order).
+                    ToArray();
+                coffs.Add(lpcCoeffs2);
             }
-
+            Synthesize(coffs, 4, order);
             
-            Console.WriteLine("LPC Coefficients:");
-            int x = 0;
-            //foreach (var coeff in lpcCoefficients)
-            //{
-            //    Console.WriteLine(coeff);
-            //    x++;
-            //    if (x <= 1000) break;
-            //}
+            Console.WriteLine("Your synthesized speech is ready");
+            
+            
         }
     }
 }

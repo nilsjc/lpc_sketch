@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+.vs
+**/*.user
+LPCcoder/appsettings.Development.json
+LPCcoder/bin/
+LPCcoder/obj/
