@@ -1,4 +1,17 @@
+links of interest
+
 https://dsp.stackexchange.com/questions/2482/speech-compression-in-lpc-how-does-the-linear-predictive-filter-work-on-a-gene
 
 https://web.ece.ucsb.edu/Faculty/Rabiner/ece259/digital%20speech%20processing%20course/lectures_new/Lecture%2013_winter_2012.pdf
 
+https://isip.piconepress.com/courses/msstate/ece_8463/lectures/current/lecture_16/lecture_16.pdf
+
+https://github.com/bisqwit/speech_synth_series/blob/master/ep4-speechsyn/pcmaudio-lpc-wav.cc
+
+
+float[] lowpass20order = {
+                0.00001f, -0.0060674241f, 0.013522968f, 0.020166424f, 0.034195130f, 0.049438435f,
+	            0.065887064f, 0.080889755f, 0.093749727f, 0.10114059f, 0.10468431f, 0.10114059f,
+	            0.093749727f, 0.080889755f, 0.065887064f, 0.049438435f, 0.034195130f, 0.020166424f,
+	            0.013522968f, -0.0060674241f
+                };

@@ -13,7 +13,45 @@
             LPC lpc = new();
             lpc.StartHere("testmening3.wav");
         }
+
+        static void HanningWindow()
+        {
+            float[] signalArray = new float[512];
+            for (int i = 0; i < signalArray.Length; i++)
+            {
+                float hanningValue = (float)(0.5 * (1 - Math.Cos((2 * Math.PI * i) / 512)));
+
+                Console.WriteLine($"{i}:\t {hanningValue.ToString()}");
+                signalArray[i] *= hanningValue;
+            }
+        }
+
+        static void Pinchettes()
+        {
+            float[] result =     [0.1f, 0.3f, 0.5f, 0.7f, 0.9f, 0.1f, 0.3f, 0.5f, 0.7f, 0.9f, 0.1f, 0.2f];
+            float[] coffs = [0.01f, -0.02f, -0.03f, 0.04f, 0.01f, 0.06f, -0.007f, 0.01f, 0.02f, 0.01f, -0.02f, 0.03f];
+            float[] buff =    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+
+            // e[10] is sound input and _s is buffer
+            for (int x = 9; x >= 0; x--)
+            {
+                result[x] = result[x+1] - coffs[x] * buff[x];
+            }
+            for(int x = 8; x >= 0; x--)
+            {
+                buff[x+1] = buff[x] + coffs[x] * result[x];
+            }
+            buff[0] = result[0];
+            for(int y = 9; y >= 0; y--)
+            {
+                Console.WriteLine($"{y} : e:{result[y]}\t\t s_{buff[y]}");
+            }
+
+            //*excitation++ = e[10];
+            //*output++ = e[0];
+        }
     }
+
     
     public class LPC
     {
@@ -133,28 +171,47 @@
             // At this point, lpcCoeffs contains the LPC coefficients and
             // reflectionCoeffs contains the reflection coefficients.
         }
-        public (List<float[]>,List<float>) CreateFrames(float[]input, int size)
+        public (List<float[]>,List<float>) CreateFrames(float[]input, int frameSize)
         {
-            int n = input.Length;
-            int resultAmounts = n / size;
-            List<float[]> result = new List<float[]>();  
-            List<float> volume = new List<float>();
+            int sampleLength = input.Length;
+            int totalFrames = sampleLength / frameSize;
+            List<float[]> result = [];  
+            List<float> volume = [];
             int c = 0;
             float average = 0.0f;
-            for (int y = 0; y < resultAmounts; y++)
+            for (int y = 0; y < totalFrames; y++)
             {
-                float[] frame = new float[size];
-                for (int x = 0; x < size; x++)
+                float[] frame = new float[frameSize];
+                for (int x = 0; x < frameSize; x++)
                 {
                     average += frame[x] = input[x+c];
+                    frame[x] = frame[x] * CalculateHanning(x, frameSize);
                 }
-                c += size;
-                average /= size; // average vol
+                c += frameSize;
+                average /= frameSize; // average vol
                 result.Add(frame);
                 volume.Add(average);
             }
             return (result,volume);
         }
+
+        /// <summary>
+        /// räknar ut Hanningvärdet baserad på fönstrets längd och position
+        /// </summary>
+        /// <param name="index">position</param>
+        /// <param name="length">fönstrets längd</param>
+        /// <returns></returns>
+        public float CalculateHanning(int index, int length)
+        {
+            float hanningValue = (float)(0.5 * (1 - Math.Cos((2 * Math.PI * index) / length)));
+            return hanningValue;
+        }
+
+        /// <summary>
+        /// Cuts all zero:es at the beginning of the soundfile
+        /// </summary>
+        /// <param name="input"></param>
+        /// <returns></returns>
         public float[] CleanUp(float[] input)
         {
             int index = 0;
@@ -166,7 +223,7 @@
         {
             var rand = new Random();
             int sampleRate = 44100;
-            int VoicePitch = 30;
+            int VoicePitch = 1;
             int count = 0;
             float[] k = new float[Order];
             float[] bp = new float[Order];
@@ -184,8 +241,6 @@
                     int samples_per_frame = (int)(0.005 / sampling_period);
                     for (int smp = 0; smp < samples_per_frame * lengthMultiplicator; smp++)
                     {
-                        // https://github.com/bisqwit/speech_synth_series/blob/master/ep4-speechsyn/pcmaudio-lpc-wav.cc
-
                         //// Generate buzz, at the specified voice pitch
                         count++;
                         float w = (float)(count %= rate / VoicePitch) / (rate / VoicePitch);
@@ -193,7 +248,7 @@
                         float pt = (float)Math.Pow(2.0, w);
                         float f = (float)(pt - 1 / (1 + w)); // -0.5  + rand.NextDouble()) * 0.5  + pt - 1 / (1 + w)
 
-                        // Apply the filter (LPC coefficients)
+                        // Apply the filter (LPC coefficients) co[j]
                         float sum = f;
                         for (int j = 0; j < Order; j++)
                         {
@@ -221,7 +276,8 @@
             
             //float[] lpcCoefficients = CalculateLPC(signal, order);
             var (frames,volume) = CreateFrames(signal, FrameLength);
-            List<float[]> coffs = new();
+            List<float[]> coffs = [];
+            
             foreach (var fr in frames)
             {
                 float[] lpcCoeffs = new float[order+1];
@@ -233,9 +289,9 @@
                     ToArray();
                 coffs.Add(lpcCoeffs2);
             }
-            Synthesize(coffs, 4, order);
+            Synthesize(coffs, 24, order);
             
-            Console.WriteLine("Your synthesized speech is ready");
+            Console.WriteLine("Your soundfile is ready");
             
             
         }
