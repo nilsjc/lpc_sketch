@@ -201,10 +201,8 @@
             // change with a huge volume swing. So we measure the filter energy
             // before and after and rescale the excitation gain to keep loudness
             // constant -- only the formants move, not the volume.
-            Console.WriteLine($"FormantScale = {FormantScale}");
             if (Math.Abs(FormantScale - 1.0f) > 1e-6f)
             {
-                Console.WriteLine("Applying formant scaling...");
                 float energyBefore = ImpulseResponseEnergy(info.Lpc, 2048);
                 info.Lpc = ApplyFormantScale(info.Lpc, FormantScale);
                 float energyAfter = ImpulseResponseEnergy(info.Lpc, 2048);
@@ -330,18 +328,6 @@
             for (int i = 0; i < p; i++) poly[i + 1] = new Complex(aCoeffs[i], 0.0);
  
             Complex[] roots = FindRoots(poly);
-
-                // TEMP: bygg om polynomet från rötterna UTAN att skala, och jämför med indata.
-                var check = new Complex[] { Complex.One };
-                foreach (var r in roots)
-                {
-                    var nx = new Complex[check.Length + 1];
-                    for (int i = 0; i < check.Length; i++) { nx[i] += check[i]; nx[i + 1] += check[i] * (-r); }
-                    check = nx;
-                }
-                for (int i = 0; i < p; i++)
-                    Console.WriteLine($"a[{i}] in={aCoeffs[i]:F4}  roundtrip={check[i + 1].Real:F4}");
- 
             // Scale each pole's angle; keep its radius (clamp to stay stable).
             const double maxAngle = Math.PI * 0.999;
             for (int i = 0; i < roots.Length; i++)
