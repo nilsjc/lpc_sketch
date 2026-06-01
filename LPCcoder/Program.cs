@@ -1,163 +1,237 @@
 ﻿namespace LPCcoder
 {
-    using Microsoft.VisualBasic;
     using NAudio.Wave;
-    using System.Linq.Expressions;
-    using static System.Runtime.InteropServices.JavaScript.JSType;
-
+    using System;
+    using System.Collections.Generic;
+    using System.Linq;
+    using System.Numerics;
+ 
     internal class Program
     {
-        
         static void Main(string[] args)
         {
             LPC lpc = new();
-            lpc.StartHere("testmening3.wav");
-        }
-
-        static void HanningWindow()
-        {
-            float[] signalArray = new float[512];
-            for (int i = 0; i < signalArray.Length; i++)
+            Console.WriteLine("Enter the path to your wav file:");
+            string filePath = Console.ReadLine()?.Trim('"');
+            if(filePath == null || !System.IO.File.Exists(filePath))
             {
-                float hanningValue = (float)(0.5 * (1 - Math.Cos((2 * Math.PI * i) / 512)));
-
-                Console.WriteLine($"{i}:\t {hanningValue.ToString()}");
-                signalArray[i] *= hanningValue;
+                filePath = "voice.wav";
+                Console.WriteLine($"File not found. Using default: {filePath}");
             }
-        }
-
-        static void Pinchettes()
-        {
-            float[] result =     [0.1f, 0.3f, 0.5f, 0.7f, 0.9f, 0.1f, 0.3f, 0.5f, 0.7f, 0.9f, 0.1f, 0.2f];
-            float[] coffs = [0.01f, -0.02f, -0.03f, 0.04f, 0.01f, 0.06f, -0.007f, 0.01f, 0.02f, 0.01f, -0.02f, 0.03f];
-            float[] buff =    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-
-            // e[10] is sound input and _s is buffer
-            for (int x = 9; x >= 0; x--)
+            Console.WriteLine("Robot voice?");
+            bool useFixedPitch = Console.ReadLine()?.Trim().ToLower() == "y";
+            if(useFixedPitch)
             {
-                result[x] = result[x+1] - coffs[x] * buff[x];
+                Console.WriteLine("Please enter frequency of the pitch in Hz (e.g. 70)");
+                if (int.TryParse(Console.ReadLine(), out int pitchHz))
+                    lpc.FixedPitchHz = pitchHz;
             }
-            for(int x = 8; x >= 0; x--)
-            {
-                buff[x+1] = buff[x] + coffs[x] * result[x];
-            }
-            buff[0] = result[0];
-            for(int y = 9; y >= 0; y--)
-            {
-                Console.WriteLine($"{y} : e:{result[y]}\t\t s_{buff[y]}");
-            }
-
-            //*excitation++ = e[10];
-            //*output++ = e[0];
+            lpc.PerformLPCAnalysisSynthesizing(filePath, useFixedPitch: useFixedPitch);
         }
     }
-
-    
+ 
+    /// <summary>Per-frame analysis result.</summary>
+    public class FrameInfo
+    {
+        public float[] Lpc = Array.Empty<float>(); // a_1 .. a_Order (A(z) = 1 + sum a_k z^-k)
+        public float Gain;                          // per-sample excitation amplitude
+        public bool Voiced;
+        public int PitchPeriod;                     // in samples (valid when Voiced)
+    }
+ 
     public class LPC
     {
-        const string FileName = "Result.wav";
-        public float[] ReadWav(string filename)
+        private const int Order = 20;
+        private const float PreEmphasis = 0.97f;
+        private const float FrameSeconds = 0.030f;  // 30 ms analysis window
+        private const float VoicingThreshold = 0.30f;
+ 
+        // TODO not functioning well
+        // Formant shift: multiplies every formant frequency by this factor.
+        // 1.0 = unchanged, > 1.0 = brighter/smaller voice, < 1.0 = darker/larger.
+        // Try 1.15 or 0.85 to hear the effect.
+        private const float FormantScale = 1.0f;
+
+        // When using a constant pitch instead of the estimated one
+        public int FixedPitchHz = 70;
+ 
+ 
+        public void PerformLPCAnalysisSynthesizing(string filePath, bool useFixedPitch = false)
         {
-            AudioFileReader reader = new AudioFileReader(filename);
-            ISampleProvider isp = reader.ToSampleProvider();
-            float[] buffer = new float[reader.Length / 2];
-            isp.Read(buffer, 0, buffer.Length);
+            int sampleRate;
+            float[] rawSignal = ReadWav(filePath, out sampleRate);
+            float[] signal = CleanUp(rawSignal);
+            signal = PreEmphasize(signal, PreEmphasis);
+ 
+            int frameLength = (int)(FrameSeconds * sampleRate);
+            int hop = frameLength / 2;               // 50 % overlap for analysis
+ 
+            List<float[]> frames = CreateFrames(signal, frameLength, hop);
+ 
+            var frameData = new List<FrameInfo>(frames.Count);
+            foreach (var fr in frames)
+                frameData.Add(AnalyzeFrame(fr, Order, sampleRate));
+ 
+            Synthesize(frameData, hop, sampleRate, "Result.wav", useFixedPitch);
+            Console.WriteLine("Your soundfile is ready");
+        }
+ 
+        /// <summary>
+        /// Reads a wav file into 32-bit float samples (mono mix as provided by NAudio).
+        /// </summary>
+        public float[] ReadWav(string filename, out int sampleRate)
+        {
+            using var reader = new AudioFileReader(filename);
+            sampleRate = reader.WaveFormat.SampleRate;
+ 
+            // AudioFileReader exposes IEEE float samples, so sample count = bytes / 4.
+            int bytesPerSample = reader.WaveFormat.BitsPerSample / 8; // = 4 for float
+            int capacity = (int)(reader.Length / bytesPerSample);
+ 
+            var buffer = new float[capacity];
+            int total = 0;
+            int read;
+            // Read until the stream is exhausted; honour the returned count.
+            while (total < buffer.Length &&
+                   (read = reader.Read(buffer, total, buffer.Length - total)) > 0)
+            {
+                total += read;
+            }
+ 
+            if (total != buffer.Length)
+                Array.Resize(ref buffer, total);
+ 
+            // If the source is stereo, down-mix to mono.
+            int channels = reader.WaveFormat.Channels;
+            if (channels > 1)
+            {
+                int frames = buffer.Length / channels;
+                var mono = new float[frames];
+                for (int i = 0; i < frames; i++)
+                {
+                    float s = 0f;
+                    for (int c = 0; c < channels; c++) s += buffer[i * channels + c];
+                    mono[i] = s / channels;
+                }
+                buffer = mono;
+            }
+ 
             return buffer;
         }
-
-        /// <summary>
-        /// Old method
-        /// </summary>
-        /// <param name="signal"></param>
-        /// <param name="order"></param>
-        /// <returns></returns>
-        /// 
-        [Obsolete]
-        public static float[] CalculateLPC(float[] signal, int order)
+ 
+        /// <summary>Trims leading silence (zero samples) from the signal.</summary>
+        public float[] CleanUp(float[] input)
         {
-            int n = signal.Length;
-            float[] autocorrelation = new float[order + 1];
-            float[] lpcCoefficients = new float[order + 1];
-            float[] error = new float[order + 1];
-            float[] reflection = new float[order + 1];
-
-            // Calculate autocorrelation
-            for (int i = 0; i <= order; i++)
-            {
-                autocorrelation[i] = 0.0f;
-                for (int j = 0; j < n - i; j++)
-                {
-                    autocorrelation[i] += signal[j] * signal[j + i];
-                }
-            }
-
-            // Initialize error
-            error[0] = autocorrelation[0];
-
-            // Levinson-Durbin recursion
-            for (int i = 1; i <= order; i++)
-            {
-                float sum = 0.0f;
-                for (int j = 1; j < i; j++)
-                {
-                    sum += lpcCoefficients[j] * autocorrelation[i - j];
-                }
-                reflection[i] = (autocorrelation[i] - sum) / error[i - 1];
-                lpcCoefficients[i] = reflection[i];
-
-                for (int j = 1; j < i; j++)
-                {
-                    lpcCoefficients[j] -= reflection[i] * lpcCoefficients[i - j];
-                }
-
-                error[i] = (1.0f - reflection[i] * reflection[i]) * error[i - 1];
-            }
-
-            return lpcCoefficients;
+            int index = 0;
+            while (index < input.Length && input[index] == 0.0f) index++;
+            return input.Skip(index).ToArray();
         }
-
-        public static void PerformLPCAnalysis(float[] frame, int order, float[] lpcCoeffs, float[] autocorr, float[] reflectionCoeffs)
+ 
+        /// <summary>Pre-emphasis filter y[n] = x[n] - a*x[n-1] (boosts high formants).</summary>
+        public float[] PreEmphasize(float[] input, float coeff)
         {
-            var frameSize = frame.Length;
-            // Step 1: Calculate the autocorrelation coefficients
+            if (input.Length == 0) return input;
+            var output = new float[input.Length];
+            output[0] = input[0];
+            for (int n = 1; n < input.Length; n++)
+                output[n] = input[n] - coeff * input[n - 1];
+            return output;
+        }
+ 
+        /// <summary>
+        /// Splits the signal into overlapping, Hann-windowed frames.
+        /// </summary>
+        public List<float[]> CreateFrames(float[] input, int frameSize, int hop)
+        {
+            var result = new List<float[]>();
+            if (input.Length < frameSize) return result;
+ 
+            for (int start = 0; start + frameSize <= input.Length; start += hop)
+            {
+                var frame = new float[frameSize];
+                for (int x = 0; x < frameSize; x++)
+                    frame[x] = input[start + x] * CalculateHanning(x, frameSize);
+                result.Add(frame);
+            }
+            return result;
+        }
+ 
+        /// <summary>Hann window value at a given position (reduces spectral leakage).</summary>
+        public float CalculateHanning(int index, int length)
+        {
+            return (float)(0.5 * (1 - Math.Cos((2 * Math.PI * index) / (length - 1))));
+        }
+ 
+        /// <summary>
+        /// Full analysis of one frame: LPC coefficients, excitation gain,
+        /// and a voiced/unvoiced decision with pitch estimate.
+        /// </summary>
+        public FrameInfo AnalyzeFrame(float[] frame, int order, int sampleRate)
+        {
+            var lpcCoeffs = new float[order + 1];
+            var autocorr = new float[order + 1];
+            var reflectionCoeffs = new float[order + 1];
+ 
+            float error = PerformLPCAnalysis(frame, order, lpcCoeffs, autocorr, reflectionCoeffs);
+ 
+            var info = new FrameInfo
+            {
+                // a_1 .. a_order (drop the leading 1.0)
+                Lpc = lpcCoeffs.Skip(1).Take(order).ToArray(),
+                // residual energy -> per-sample amplitude
+                Gain = (float)Math.Sqrt(Math.Max(error, 0f) / frame.Length)
+            };
+ 
+            // Optionally move the formants by scaling the pole angles.
+            if (Math.Abs(FormantScale - 1.0f) > 1e-6f)
+                info.Lpc = ApplyFormantScale(info.Lpc, FormantScale);
+ 
+            EstimatePitch(frame, sampleRate, out bool voiced, out int period);
+            info.Voiced = voiced;
+            info.PitchPeriod = period;
+            return info;
+        }
+ 
+        /// <summary>
+        /// Autocorrelation + Levinson-Durbin recursion.
+        /// Returns the final prediction-error energy.
+        /// </summary>
+        public static float PerformLPCAnalysis(float[] frame, int order,
+            float[] lpcCoeffs, float[] autocorr, float[] reflectionCoeffs)
+        {
+            int frameSize = frame.Length;
+ 
+            // Step 1: autocorrelation coefficients R[0..order]
             for (int k = 0; k <= order; k++)
             {
                 float sum = 0.0f;
                 for (int n = 0; n < frameSize - k; n++)
-                {
                     sum += frame[n] * frame[n + k];
-                }
                 autocorr[k] = sum;
             }
-
-            // Step 2: Solve the Toeplitz system of equations using Levinson-Durbin recursion
+ 
+            // Step 2: Levinson-Durbin recursion
             lpcCoeffs[0] = 1.0f;
             float error = autocorr[0];
-
-            if (error == 0.0f)
+ 
+            if (error <= 0.0f)
             {
-                // If the autocorrelation is zero, return zero coefficients
-                for (int i = 0; i <= order; i++)
-                {
-                    lpcCoeffs[i] = 0.0f;
-                }
-                return;
+                for (int i = 0; i <= order; i++) lpcCoeffs[i] = 0.0f;
+                return 0.0f;
             }
-
+ 
             reflectionCoeffs[0] = -autocorr[1] / autocorr[0];
             lpcCoeffs[1] = reflectionCoeffs[0];
             error *= (1.0f - reflectionCoeffs[0] * reflectionCoeffs[0]);
-
+ 
             for (int m = 1; m < order; m++)
             {
                 float sum = 0.0f;
                 for (int j = 0; j <= m; j++)
-                {
                     sum += lpcCoeffs[j] * autocorr[m + 1 - j];
-                }
-
-                reflectionCoeffs[m] = -sum / error;
-
+ 
+                reflectionCoeffs[m] = (error != 0.0f) ? -sum / error : 0.0f;
+ 
                 for (int j = 1; j <= (m + 1) / 2; j++)
                 {
                     float tmp = lpcCoeffs[j] + reflectionCoeffs[m] * lpcCoeffs[m + 1 - j];
@@ -167,133 +241,235 @@
                 lpcCoeffs[m + 1] = reflectionCoeffs[m];
                 error *= (1.0f - reflectionCoeffs[m] * reflectionCoeffs[m]);
             }
-
-            // At this point, lpcCoeffs contains the LPC coefficients and
-            // reflectionCoeffs contains the reflection coefficients.
+ 
+            return error;
         }
-        public (List<float[]>,List<float>) CreateFrames(float[]input, int frameSize)
+ 
+        /// <summary>
+        /// Simple pitch estimate via normalized autocorrelation peak in the
+        /// 70-350 Hz range. Decides voiced/unvoiced from the peak strength.
+        /// </summary>
+        private void EstimatePitch(float[] frame, int sampleRate, out bool voiced, out int period)
         {
-            int sampleLength = input.Length;
-            int totalFrames = sampleLength / frameSize;
-            List<float[]> result = [];  
-            List<float> volume = [];
-            int c = 0;
-            float average = 0.0f;
-            for (int y = 0; y < totalFrames; y++)
+            int minLag = Math.Max(1, sampleRate / 350);
+            int maxLag = Math.Min(frame.Length - 1, sampleRate / 70);
+ 
+            float r0 = 0f;
+            for (int n = 0; n < frame.Length; n++) r0 += frame[n] * frame[n];
+ 
+            voiced = false;
+            period = sampleRate / 120; // default fallback pitch (~120 Hz)
+ 
+            if (r0 <= 0f) return;
+ 
+            float bestValue = 0f;
+            int bestLag = -1;
+            for (int lag = minLag; lag <= maxLag; lag++)
             {
-                float[] frame = new float[frameSize];
-                for (int x = 0; x < frameSize; x++)
+                float sum = 0f;
+                for (int n = 0; n < frame.Length - lag; n++)
+                    sum += frame[n] * frame[n + lag];
+ 
+                float norm = sum / r0;
+                if (norm > bestValue)
                 {
-                    average += frame[x] = input[x+c];
-                    frame[x] = frame[x] * CalculateHanning(x, frameSize);
+                    bestValue = norm;
+                    bestLag = lag;
                 }
-                c += frameSize;
-                average /= frameSize; // average vol
-                result.Add(frame);
-                volume.Add(average);
             }
-            return (result,volume);
+ 
+            if (bestValue >= VoicingThreshold && bestLag > 0)
+            {
+                voiced = true;
+                period = bestLag;
+            }
         }
-
+ 
         /// <summary>
-        /// räknar ut Hanningvärdet baserad på fönstrets längd och position
+        /// Shifts every formant by scaling the pole angles by 'alpha'.
+        /// The formants are the poles of 1/A(z); a pole at angle theta sits at
+        /// frequency f = theta * fs / (2*pi). Multiplying every angle by alpha
+        /// therefore multiplies every formant frequency by alpha, while the pole
+        /// radius (and thus the formant bandwidth) is preserved.
         /// </summary>
-        /// <param name="index">position</param>
-        /// <param name="length">fönstrets längd</param>
-        /// <returns></returns>
-        public float CalculateHanning(int index, int length)
+        /// <param name="aCoeffs">LPC coefficients a_1..a_order.</param>
+        /// <param name="alpha">Formant scale factor (1.0 = unchanged).</param>
+        private float[] ApplyFormantScale(float[] aCoeffs, float alpha)
         {
-            float hanningValue = (float)(0.5 * (1 - Math.Cos((2 * Math.PI * index) / length)));
-            return hanningValue;
+            int p = aCoeffs.Length;
+ 
+            // Polynomial z^p + a_1 z^(p-1) + ... + a_p, coefficients high->low.
+            var poly = new Complex[p + 1];
+            poly[0] = Complex.One;
+            for (int i = 0; i < p; i++) poly[i + 1] = new Complex(aCoeffs[i], 0.0);
+ 
+            Complex[] roots = FindRoots(poly);
+ 
+            // Scale each pole's angle; keep its radius (clamp to stay stable).
+            const double maxAngle = Math.PI * 0.999;
+            for (int i = 0; i < roots.Length; i++)
+            {
+                double mag = roots[i].Magnitude;
+                double ang = roots[i].Phase * alpha;
+                if (ang > maxAngle) ang = maxAngle;
+                if (ang < -maxAngle) ang = -maxAngle;
+                if (mag >= 0.999) mag = 0.999;       // guarantee stability
+                roots[i] = Complex.FromPolarCoordinates(mag, ang);
+            }
+ 
+            // Rebuild the monic polynomial: product of (z - root_i).
+            var newPoly = new Complex[] { Complex.One };
+            foreach (var r in roots)
+            {
+                var next = new Complex[newPoly.Length + 1];
+                for (int i = 0; i < newPoly.Length; i++)
+                {
+                    next[i]     += newPoly[i];        // multiply by z
+                    next[i + 1] += newPoly[i] * (-r); // multiply by (-root)
+                }
+                newPoly = next;
+            }
+ 
+            // Imaginary parts cancel for conjugate pole pairs; keep the real part.
+            var result = new float[p];
+            for (int i = 0; i < p; i++) result[i] = (float)newPoly[i + 1].Real;
+            return result;
         }
-
+ 
         /// <summary>
-        /// Cuts all zero:es at the beginning of the soundfile
+        /// Finds all roots of a monic complex polynomial (highest degree first)
+        /// using the Durand-Kerner (Weierstrass) iteration.
         /// </summary>
-        /// <param name="input"></param>
-        /// <returns></returns>
-        public float[] CleanUp(float[] input)
+        private Complex[] FindRoots(Complex[] poly)
         {
-            int index = 0;
-            while (index < input.Length && input[index] == 0.0f) index++;
-            return input.Skip(index).ToArray();
+            int n = poly.Length - 1;                 // degree
+            var roots = new Complex[n];
+ 
+            // Spread the initial guesses around a spiral to aid convergence.
+            var seed = new Complex(0.4, 0.9);
+            Complex cur = Complex.One;
+            for (int i = 0; i < n; i++) { cur *= seed; roots[i] = cur; }
+ 
+            for (int iter = 0; iter < 100; iter++)
+            {
+                double maxDelta = 0.0;
+                for (int i = 0; i < n; i++)
+                {
+                    Complex num = EvalPoly(poly, roots[i]);
+                    Complex den = Complex.One;
+                    for (int j = 0; j < n; j++)
+                        if (j != i) den *= (roots[i] - roots[j]);
+ 
+                    if (den == Complex.Zero) continue;
+                    Complex delta = num / den;
+                    roots[i] -= delta;
+                    double m = delta.Magnitude;
+                    if (m > maxDelta) maxDelta = m;
+                }
+                if (maxDelta < 1e-12) break;          // converged
+            }
+            return roots;
         }
-
-        public void Synthesize(List<float[]> coffs, int lengthMultiplicator, int Order)
+ 
+        /// <summary>Evaluates a polynomial (highest degree first) via Horner.</summary>
+        private Complex EvalPoly(Complex[] poly, Complex z)
         {
-            var rand = new Random();
-            int sampleRate = 44100;
-            int VoicePitch = 1;
-            int count = 0;
-            float[] k = new float[Order];
-            float[] bp = new float[Order];
+            Complex result = Complex.Zero;
+            for (int i = 0; i < poly.Length; i++)
+                result = result * z + poly[i];
+            return result;
+        }
+ 
+        /// <summary>
+        /// Source-filter synthesis. A continuous excitation (impulse train for
+        /// voiced frames, white noise for unvoiced) is run through the all-pole
+        /// LPC filter. Output is de-emphasized and peak-normalized before writing.
+        /// </summary>
+        public void Synthesize(List<FrameInfo> frameData, int samplesPerFrame,
+            int sampleRate, string fileName, bool useFixedPitch = true)
+        {
+            var rand = new Random(1234);
+            int maxOrder = Order;
+ 
+            // Filter history (continuous across frames -> no clicks at boundaries).
+            var bp = new float[maxOrder];
             int offset = 0;
-            int MaxOrder = Order;
-            //float phase = 0;
-            //float fTablesize = 512;
-            float sampling_period = 0.00002267573696f;
-            WaveFormat waveFormat = new WaveFormat();
-            using (WaveFileWriter writer = new WaveFileWriter(FileName, waveFormat))
+ 
+            int pulseCountdown = 0;   // samples until next glottal pulse
+            var output = new List<float>();
+            
+            foreach (var fi in frameData)
             {
-                foreach (var co in coffs)
+                float[] co = fi.Lpc;
+                for (int smp = 0; smp < samplesPerFrame; smp++)
                 {
-                    int rate = (int)(1.0f / sampling_period); 
-                    int samples_per_frame = (int)(0.005 / sampling_period);
-                    for (int smp = 0; smp < samples_per_frame * lengthMultiplicator; smp++)
+                    // --- Excitation ---
+                    float e;
+                    if (fi.Voiced)
                     {
-                        //// Generate buzz, at the specified voice pitch
-                        count++;
-                        float w = (float)(count %= rate / VoicePitch) / (rate / VoicePitch);
-
-                        float pt = (float)Math.Pow(2.0, w);
-                        float f = (float)(pt - 1 / (1 + w)); // -0.5  + rand.NextDouble()) * 0.5  + pt - 1 / (1 + w)
-
-                        // Apply the filter (LPC coefficients) co[j]
-                        float sum = f;
-                        for (int j = 0; j < Order; j++)
+                        int T;
+                        if (useFixedPitch)
                         {
-                            int indx = (offset + MaxOrder - j) % MaxOrder;
-                            sum -= (co[j]) * bp[indx];
+                            T = FixedPitchHz > 0 ? sampleRate / FixedPitchHz : Math.Max(1, fi.PitchPeriod);
                         }
-
-                        // Save it into a rolling buffer
-                        offset++;
-                        int index = offset %= MaxOrder;
-                        float r = bp[index] = sum;
-                        writer.WriteSample(r);
+                        else
+                        {
+                            T = Math.Max(1, fi.PitchPeriod);
+                        }
+                        if (pulseCountdown <= 0)
+                        {
+                            // Impulse scaled so average power matches the gain.
+                            e = fi.Gain * (float)Math.Sqrt(T);
+                            pulseCountdown = T;
+                        }
+                        else e = 0f;
+                        pulseCountdown--;
                     }
-                    
+                    else
+                    {
+                        e = fi.Gain * NextGaussian(rand);
+                    }
+ 
+                    // --- All-pole filter: y[n] = e - sum a_k * y[n-k] ---
+                    float sum = e;
+                    for (int j = 0; j < maxOrder; j++)
+                    {
+                        int indx = (offset + maxOrder - j) % maxOrder;
+                        sum -= co[j] * bp[indx];
+                    }
+ 
+                    offset = (offset + 1) % maxOrder;
+                    bp[offset] = sum;
+                    output.Add(sum);
                 }
             }
-        }
-
-        public void StartHere(string filePath)
-        {
-            int FrameLength = 2048;
-            float[] rawSignal = ReadWav(filePath);
-            float[] signal = CleanUp(rawSignal);
-            int order = 20; // LPC order
-            
-            //float[] lpcCoefficients = CalculateLPC(signal, order);
-            var (frames,volume) = CreateFrames(signal, FrameLength);
-            List<float[]> coffs = [];
-            
-            foreach (var fr in frames)
+ 
+            // De-emphasis (inverse of the analysis pre-emphasis): y[n] = x[n] + a*y[n-1]
+            float prev = 0f;
+            for (int i = 0; i < output.Count; i++)
             {
-                float[] lpcCoeffs = new float[order+1];
-                float[] autocorr = new float[order + 1];
-                float[] reflectionCoeffs = new float[order + 1];
-                PerformLPCAnalysis(fr, order, lpcCoeffs, autocorr, reflectionCoeffs);
-                var lpcCoeffs2 = lpcCoeffs.Skip(1).
-                    Take(order).
-                    ToArray();
-                coffs.Add(lpcCoeffs2);
+                float v = output[i] + PreEmphasis * prev;
+                output[i] = v;
+                prev = v;
             }
-            Synthesize(coffs, 24, order);
-            
-            Console.WriteLine("Your soundfile is ready");
-            
-            
+ 
+            // Peak-normalize to avoid clipping.
+            float peak = 0f;
+            foreach (var v in output) peak = Math.Max(peak, Math.Abs(v));
+            float scale = peak > 0f ? 0.95f / peak : 1f;
+ 
+            var waveFormat = new WaveFormat(sampleRate, 16, 1); // mono, matches source rate
+            using var writer = new WaveFileWriter(fileName, waveFormat);
+            foreach (var v in output)
+                writer.WriteSample(v * scale);
+        }
+ 
+        /// <summary>Standard normal sample via Box-Muller.</summary>
+        private static float NextGaussian(Random rand)
+        {
+            double u1 = 1.0 - rand.NextDouble();
+            double u2 = 1.0 - rand.NextDouble();
+            return (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
         }
     }
 }
