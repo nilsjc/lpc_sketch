@@ -50,7 +50,7 @@
         // Formant shift: multiplies every formant frequency by this factor.
         // 1.0 = unchanged, > 1.0 = brighter/smaller voice, < 1.0 = darker/larger.
         // Try 1.15 or 0.85 to hear the effect.
-        private const float FormantScale = 1.0f;
+        private const float FormantScale = 0.95f;
 
         // When using a constant pitch instead of the estimated one
         public int FixedPitchHz = 70;
