@@ -1,17 +1,24 @@
 links of interest
 
+
+https://ccrma.stanford.edu/~hskim08/lpc/
+
+https://www.kuniga.me/blog/2021/05/13/lpc-in-python.html
+
 https://dsp.stackexchange.com/questions/2482/speech-compression-in-lpc-how-does-the-linear-predictive-filter-work-on-a-gene
 
 https://web.ece.ucsb.edu/Faculty/Rabiner/ece259/digital%20speech%20processing%20course/lectures_new/Lecture%2013_winter_2012.pdf
 
 https://isip.piconepress.com/courses/msstate/ece_8463/lectures/current/lecture_16/lecture_16.pdf
 
-https://github.com/bisqwit/speech_synth_series/blob/master/ep4-speechsyn/pcmaudio-lpc-wav.cc
+https://dsp.stackexchange.com/questions/24115/linear-prediction-coefficients
 
+https://www.youtube.com/watch?v=lWH-Oh5KnNY&list=PLA480D1979B10D8F5&index=3
 
-float[] lowpass20order = {
-                0.00001f, -0.0060674241f, 0.013522968f, 0.020166424f, 0.034195130f, 0.049438435f,
-	            0.065887064f, 0.080889755f, 0.093749727f, 0.10114059f, 0.10468431f, 0.10114059f,
-	            0.093749727f, 0.080889755f, 0.065887064f, 0.049438435f, 0.034195130f, 0.020166424f,
-	            0.013522968f, -0.0060674241f
-                };
+https://github.com/sausagenoods/lapic/blob/master/src/lpc.c
+
+http://eemedia.ee.unsw.edu.au/contents/elec9344/LectureNotes/Chapter%204.pdf
+
+https://ocw.mit.edu/courses/24-910-topics-in-linguistic-theory-laboratory-phonology-spring-2007/175a61591cf2a5a8f0d502887ad61724_lec5_spectral.pdf
+
+https://www.youtube.com/@BrandonRohrer/videos
