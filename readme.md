@@ -1,4 +1,5 @@
 # LPC experiments with C# on .NET
+![Alt text](lpcinuse.png?raw=true "Schematic")<br>
 This is a console program that will generate synthetic speech based on a soundfile with speech.<br>
 When you start, it will ask for a file and some user input like formant or pitch shifting, or if you want your speech sound more like a robot/vocoder. It will then generate a result.wav file<br>
 For now this sound quite Lofi, but i am anyway more interested in using this in a musical application.<br>
