@@ -26,7 +26,17 @@
                 if (int.TryParse(Console.ReadLine(), out int pitchHz))
                     lpc.FixedPitchHz = pitchHz;
             }
+            Console.WriteLine("Formant multiplier (1.0 = unchanged, > 1.0 = brighter/smaller voice, < 1.0 = darker/larger, e.g. 1.15 or 0.85):");
+            if (float.TryParse(Console.ReadLine(), out float formantScale))
+                lpc.FormantScale = formantScale;
+
+            Console.WriteLine("Pitch modulation in span like -300 to 300 (0 = none, positive = higher, negative = lower):");
+            if (int.TryParse(Console.ReadLine(), out int pitchMod))
+                lpc.PitchModulation = pitchMod;
+
             lpc.PerformLPCAnalysisSynthesizing(filePath, useFixedPitch: useFixedPitch);
+            Console.WriteLine("Press any key to exit.");
+            Console.ReadKey();
         }
     }
  
@@ -50,10 +60,11 @@
         // Formant shift: multiplies every formant frequency by this factor.
         // 1.0 = unchanged, > 1.0 = brighter/smaller voice, < 1.0 = darker/larger.
         // Try 1.15 or 0.85 to hear the effect.
-        private const float FormantScale = 0.95f;
+        public float FormantScale = 1.0f;
 
         // When using a constant pitch instead of the estimated one
         public int FixedPitchHz = 70;
+        public int PitchModulation = 0;
  
  
         public void PerformLPCAnalysisSynthesizing(string filePath, bool useFixedPitch = false)
@@ -181,6 +192,21 @@
                 // residual energy -> per-sample amplitude
                 Gain = (float)Math.Sqrt(Math.Max(error, 0f) / frame.Length)
             };
+
+            // Optionally move the formants by scaling the pole angles.
+            // Moving the poles also changes the all-pole filter's overall gain
+            // (often by several orders of magnitude), which would swamp the timbre
+            // change with a huge volume swing. So we measure the filter energy
+            // before and after and rescale the excitation gain to keep loudness
+            // constant -- only the formants move, not the volume.
+            if (Math.Abs(FormantScale - 1.0f) > 1e-6f)
+            {
+                float energyBefore = ImpulseResponseEnergy(info.Lpc, 2048);
+                info.Lpc = ApplyFormantScale(info.Lpc, FormantScale);
+                float energyAfter = ImpulseResponseEnergy(info.Lpc, 2048);
+                if (energyAfter > 1e-9f)
+                    info.Gain *= (float)Math.Sqrt(energyBefore / energyAfter);
+            }
  
             // Optionally move the formants by scaling the pole angles.
             if (Math.Abs(FormantScale - 1.0f) > 1e-6f)
@@ -337,6 +363,27 @@
         }
  
         /// <summary>
+        /// Energy of the all-pole filter's impulse response, i.e. sum of h[n]^2
+        /// for H(z) = 1 / A(z), A(z) = 1 + sum aCoeffs[k] z^-(k+1).
+        /// Used to keep loudness constant when the formants are moved.
+        /// </summary>
+        private float ImpulseResponseEnergy(float[] aCoeffs, int n)
+        {
+            int p = aCoeffs.Length;
+            var h = new float[n];
+            float energy = 0f;
+            for (int i = 0; i < n; i++)
+            {
+                float acc = (i == 0) ? 1.0f : 0.0f;   // unit impulse input
+                for (int k = 0; k < p; k++)
+                    if (i - 1 - k >= 0) acc -= aCoeffs[k] * h[i - 1 - k];
+                h[i] = acc;
+                energy += acc * acc;
+            }
+            return energy;
+        }
+ 
+        /// <summary>
         /// Finds all roots of a monic complex polynomial (highest degree first)
         /// using the Durand-Kerner (Weierstrass) iteration.
         /// </summary>
@@ -415,6 +462,7 @@
                         else
                         {
                             T = Math.Max(1, fi.PitchPeriod);
+                            T -= PitchModulation;
                         }
                         if (pulseCountdown <= 0)
                         {
