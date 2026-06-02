@@ -10,7 +10,6 @@
     {
         static void Main(string[] args)
         {
-            LPC lpc = new();
             Console.WriteLine("Enter the path to your wav file:");
             string filePath = Console.ReadLine()?.Trim('"');
             if(filePath == null || !System.IO.File.Exists(filePath))
@@ -18,27 +17,35 @@
                 filePath = "voice.wav";
                 Console.WriteLine($"File not found. Using default: {filePath}");
             }
-            Console.WriteLine("Robot voice?");
-            bool useFixedPitch = Console.ReadLine()?.Trim().ToLower() == "y";
-            if(useFixedPitch)
+            bool loop = true;
+            while (loop)
             {
-                Console.WriteLine("Please enter frequency of the pitch in Hz (e.g. 70)");
-                if (int.TryParse(Console.ReadLine(), out int pitchHz))
-                    lpc.FixedPitchHz = pitchHz;
+                LPC lpc = new();
+                Console.WriteLine("Robot voice?");
+                bool useFixedPitch = Console.ReadLine()?.Trim().ToLower() == "y";
+                if(useFixedPitch)
+                {
+                    Console.WriteLine("Please enter frequency of the pitch in Hz (e.g. 70)");
+                    if (int.TryParse(Console.ReadLine(), out int pitchHz))
+                        lpc.FixedPitchHz = pitchHz;
+                }
+                Console.WriteLine("Formant multiplier (1.0 = unchanged, > 1.0 = brighter/smaller voice, < 1.0 = darker/larger, e.g. 1.15 or 0.85):");
+                if (float.TryParse(Console.ReadLine(), NumberStyles.Float, CultureInfo.InvariantCulture, out float formantScale))
+                    lpc.FormantScale = formantScale;
+                else
+                    Console.WriteLine("Invalid input for formant scale. Using default value of 1.0 (no change).");
+
+                if(!useFixedPitch)
+                {
+                    Console.WriteLine("Pitch modulation in span like -300 to 300 (0 = none, positive = higher, negative = lower):");
+                    if (int.TryParse(Console.ReadLine(), out int pitchMod))
+                        lpc.PitchModulation = pitchMod;
+                }
+
+                lpc.PerformLPCAnalysisSynthesizing(filePath, useFixedPitch: useFixedPitch);
+                Console.WriteLine("Press Q to exit, any other key to continue.");
+                loop = Console.ReadLine()?.Trim().ToLower() != "q";
             }
-            Console.WriteLine("Formant multiplier (1.0 = unchanged, > 1.0 = brighter/smaller voice, < 1.0 = darker/larger, e.g. 1.15 or 0.85):");
-            if (float.TryParse(Console.ReadLine(), NumberStyles.Float, CultureInfo.InvariantCulture, out float formantScale))
-                lpc.FormantScale = formantScale;
-            else
-                Console.WriteLine("Invalid input for formant scale. Using default value of 1.0 (no change).");
-
-            Console.WriteLine("Pitch modulation in span like -300 to 300 (0 = none, positive = higher, negative = lower):");
-            if (int.TryParse(Console.ReadLine(), out int pitchMod))
-                lpc.PitchModulation = pitchMod;
-
-            lpc.PerformLPCAnalysisSynthesizing(filePath, useFixedPitch: useFixedPitch);
-            Console.WriteLine("Press any key to exit.");
-            Console.ReadKey();
         }
     }
  
