@@ -1,4 +1,4 @@
-﻿namespace LPCcoder
+namespace LPCcoder
 {
     using NAudio.Wave;
     using System;
@@ -10,9 +10,7 @@
     {
         static void Main(string[] args)
         {
-            Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("Enter the path to your wav file:");
-            Console.ForegroundColor = ConsoleColor.Yellow;
             string filePath = Console.ReadLine()?.Trim('"');
             if(filePath == null || !System.IO.File.Exists(filePath))
             {
@@ -23,25 +21,25 @@
             while (loop)
             {
                 LPC lpc = new();
-                Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine("Robot voice?");
-                Console.ForegroundColor = ConsoleColor.Yellow;
                 bool useFixedPitch = Console.ReadLine()?.Trim().ToLower() == "y";
                 if(useFixedPitch)
                 {
-                    Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine("Please enter frequency of the pitch in Hz (e.g. 70)");
-                    Console.ForegroundColor = ConsoleColor.Yellow;
                     if (int.TryParse(Console.ReadLine(), out int pitchHz))
                         lpc.FixedPitchHz = pitchHz;
                 }
-                Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine("Voice/Unvoiced? (y/n) 'Y' will create a speaking voice, 'N' will create a whispering voice.");
-                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Voice/Unvoiced? (y/n) 'No' will create a whispering voice.");
                 lpc.VoiceUnvoiced = Console.ReadLine()?.Trim().ToLower() != "n";
-                Console.ForegroundColor = ConsoleColor.Green;
+                if (lpc.VoiceUnvoiced)
+                {
+                    Console.WriteLine("voice/unvoiced selected");
+                }
+                else
+                {
+                    Console.WriteLine("noise only");
+                }
                 Console.WriteLine("Formant multiplier (1.0 = unchanged, > 1.0 = brighter/smaller voice, < 1.0 = darker/larger, e.g. 1.15 or 0.85):");
-                Console.ForegroundColor = ConsoleColor.Yellow;
                 if (float.TryParse(Console.ReadLine(), NumberStyles.Float, CultureInfo.InvariantCulture, out float formantScale))
                     lpc.FormantScale = formantScale;
                 else
@@ -49,19 +47,15 @@
 
                 if(!useFixedPitch)
                 {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("Pitch modulation in semitones like -12 to 12 (0 = none, positive = higher, negative = lower):");
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    if (float.TryParse(Console.ReadLine(), NumberStyles.Float, CultureInfo.InvariantCulture, out float pitchMod))
-                        lpc.PitchSemitones = pitchMod;
+                    Console.WriteLine("Pitch modulation in span like -500 to 300 (0 = none, positive = higher, negative = lower):");
+                    if (int.TryParse(Console.ReadLine(), out int pitchMod))
+                        lpc.PitchModulation = pitchMod;
                 }
 
                 lpc.PerformLPCAnalysisSynthesizing(filePath, useFixedPitch: useFixedPitch);
-                Console.ForegroundColor = ConsoleColor.Blue;
                 Console.WriteLine("Press Q to exit, any other key to continue.");
                 loop = Console.ReadLine()?.Trim().ToLower() != "q";
             }
-            
         }
     }
  
@@ -89,7 +83,7 @@
 
         // When using a constant pitch instead of the estimated one
         public int FixedPitchHz = 70;
-        public float PitchSemitones = 0; 
+        public int PitchModulation = 0;
         public bool VoiceUnvoiced = true;
  
  
@@ -97,9 +91,6 @@
         {
             int sampleRate;
             float[] rawSignal = ReadWav(filePath, out sampleRate);
-            Console.WriteLine($"sampleRate={sampleRate}, samples={rawSignal.Length}, " +
-                  $"sec={(float)rawSignal.Length / sampleRate:0.00}");
-
             float[] signal = CleanUp(rawSignal);
             signal = PreEmphasize(signal, PreEmphasis);
  
@@ -356,19 +347,14 @@
  
             Complex[] roots = FindRoots(poly);
             // Scale each pole's angle; keep its radius (clamp to stay stable).
-            const double safe = Math.PI * 0.95;        // håll formanten under Nyquist
+            const double maxAngle = Math.PI * 0.999;
             for (int i = 0; i < roots.Length; i++)
             {
                 double mag = roots[i].Magnitude;
                 double ang = roots[i].Phase * alpha;
-
-                if (Math.Abs(ang) > safe)
-                {
-                    double excess = (Math.Abs(ang) - safe) / (Math.PI - safe); // 0..1
-                    mag *= (1.0 - 0.5 * excess);           // vidga bandbredden nära Nyquist
-                    ang = Math.Sign(ang) * safe;           // tak under Nyquist
-                }
-                if (mag > 0.999) mag = 0.999;
+                if (ang > maxAngle) ang = maxAngle;
+                if (ang < -maxAngle) ang = -maxAngle;
+                if (mag >= 0.999) mag = 0.999;       // guarantee stability
                 roots[i] = Complex.FromPolarCoordinates(mag, ang);
             }
  
@@ -462,31 +448,64 @@
         /// LPC filter. Output is de-emphasized and peak-normalized before writing.
         /// </summary>
         public void Synthesize(List<FrameInfo> frameData, int samplesPerFrame,
-    int sampleRate, string fileName, bool useFixedPitch = true)
-{
-    var rand = new Random(1234);
-    int maxOrder = Order;
-
-    // Bestående tillstånd — lever över ramgränserna (= inga klick).
-    var bp = new float[maxOrder];   // filterhistorik
-    int offset = 0;
-    int pulseCountdown = 0;
-
-    var output = new List<float>();
-
-    foreach (var fi in frameData)
-    {
-        // --- control rate: en gång per ram ---
-        FrameParams fp = Modulate(fi, sampleRate, useFixedPitch);
-
-        // --- audio rate: en gång per sampel ---
-        for (int smp = 0; smp < samplesPerFrame; smp++)
+            int sampleRate, string fileName, bool useFixedPitch = true)
         {
-            float e = NextExcitation(fp, ref pulseCountdown, rand);
-            float y = AllPoleFilter(e, fp.Lpc, bp, ref offset, maxOrder);
-            output.Add(y);
-        }
-    }
+            var rand = new Random(1234);
+            int maxOrder = Order;
+ 
+            // Filter history (continuous across frames -> no clicks at boundaries).
+            var bp = new float[maxOrder];
+            int offset = 0;
+ 
+            int pulseCountdown = 0;   // samples until next glottal pulse
+            var output = new List<float>();
+            
+            foreach (var fi in frameData)
+            {
+                float[] co = fi.Lpc;
+                for (int smp = 0; smp < samplesPerFrame; smp++)
+                {
+                    // --- Excitation ---
+                    float e;
+                    if (fi.Voiced && VoiceUnvoiced)
+                    {
+                        int T;
+                        if (useFixedPitch)
+                        {
+                            T = FixedPitchHz > 0 ? sampleRate / FixedPitchHz : Math.Max(1, fi.PitchPeriod);
+                        }
+                        else
+                        {
+                            T = Math.Max(1, fi.PitchPeriod);
+                            T -= PitchModulation;
+                        }
+                        if (pulseCountdown <= 0)
+                        {
+                            // Impulse scaled so average power matches the gain.
+                            e = fi.Gain * (float)Math.Sqrt(T);
+                            pulseCountdown = T;
+                        }
+                        else e = 0f;
+                        pulseCountdown--;
+                    }
+                    else
+                    {
+                        e = fi.Gain * NextGaussian(rand);
+                    }
+ 
+                    // --- All-pole filter: y[n] = e - sum a_k * y[n-k] ---
+                    float sum = e;
+                    for (int j = 0; j < maxOrder; j++)
+                    {
+                        int indx = (offset + maxOrder - j) % maxOrder;
+                        sum -= co[j] * bp[indx];
+                    }
+ 
+                    offset = (offset + 1) % maxOrder;
+                    bp[offset] = sum;
+                    output.Add(sum);
+                }
+            }
  
             // De-emphasis (inverse of the analysis pre-emphasis): y[n] = x[n] + a*y[n-1]
             float prev = 0f;
@@ -514,74 +533,6 @@
             double u1 = 1.0 - rand.NextDouble();
             double u2 = 1.0 - rand.NextDouble();
             return (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
-        }
-        /// <summary>Audio rate: impulståg (voiced) eller vitt brus (unvoiced).</summary>
-        private float NextExcitation(FrameParams fp, ref int pulseCountdown, Random rand)
-        {
-            if (!fp.Voiced)
-                return fp.Gain * NextGaussian(rand);
-
-            float e = 0f;
-            if (pulseCountdown <= 0)
-            {
-                e = fp.Gain * (float)Math.Sqrt(fp.Period);
-                pulseCountdown = fp.Period;
-            }
-            pulseCountdown--;
-            return e;
-        }
-
-        /// <summary>Audio rate: all-pol-filter y[n] = e - sum a_k y[n-k].</summary>
-        private float AllPoleFilter(float e, float[] co, float[] bp, ref int offset, int maxOrder)
-        {
-            float sum = e;
-            for (int j = 0; j < maxOrder; j++)
-            {
-                int indx = (offset + maxOrder - j) % maxOrder;
-                sum -= co[j] * bp[indx];
-            }
-            offset = (offset + 1) % maxOrder;
-            bp[offset] = sum;
-            return sum;
-        }
-
-        /// <summary>
-        /// Control rate (en gång per ram): gör om den oföränderliga analysramen plus
-        /// live-kontrollerna till de effektiva parametrar som ljudloopen använder.
-        /// Pitch, prosodi, freeze, formant ... allt sånt hör hemma här.
-        /// </summary>
-        private FrameParams Modulate(FrameInfo fi, int sampleRate, bool useFixedPitch)
-        {
-            int period;
-            if (useFixedPitch)
-            {
-                period = FixedPitchHz > 0 ? sampleRate / FixedPitchHz
-                                        : Math.Max(1, fi.PitchPeriod);
-            }
-            else
-            {
-                // multiplikativt skift i halvtoner (0 = oförändrat)
-                float factor = (float)Math.Pow(2.0, PitchSemitones / 12.0);
-                period = Math.Max(1, (int)Math.Round(fi.PitchPeriod / factor));
-            }
-
-            return new FrameParams
-            {
-                Lpc    = fi.Lpc,                    // (formantskalning kan flyttas hit)
-                Gain   = fi.Gain,
-                Voiced = fi.Voiced && VoiceUnvoiced,
-                Period = period
-            };
-        }
-
-
-        /// <summary>Effektiva per-ram-parametrar efter control-rate-steget.</summary>
-        private struct FrameParams
-        {
-            public float[] Lpc;     // filterkoefficienter att använda denna ram
-            public float   Gain;    // excitationsamplitud
-            public bool    Voiced;
-            public int     Period;  // excitationsperiod i samples (voiced)
         }
     }
 }
