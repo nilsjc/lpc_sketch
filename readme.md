@@ -6,7 +6,7 @@ If you are not satisifed, you can always try again. You will load the .wav-file 
 For now this sound quite Lofi, but i am anyway more interested in using this in a musical application.<br>
 This is an work in progress and some features is not implemented, like time stretch, external source modulation or control.<br>
 Both the pitch change and the formant shift is a bit shaky as well. Sometimes you will get only silence. I  recommend starting with all settings at default; that means no robot voice, voice/unvoiced mode, pitch = 0 and formant shift = 1.0. Then you can try to change the parameters to more extreme settings.<br>
-I will improve this program in the near future. A GUI would also be nice to have, with some sound playing capabilities. I am using Naudio library that is quite old today (and not maintained to my knowing), however it works, but only on Windows i think. I will soon replace Naudio with Soundflow instead.<br>
+~~I will improve this program in the near future.~~ [V 2.0 here](https://github.com/nilsjc/lpc_sketch_2) A GUI would also be nice to have, with some sound playing capabilities. I am using Naudio library that is quite old today (and not maintained to my knowing), however it works, but only on Windows i think.<br>
 In the not so near future this will be converted to a MCU, maybe an 32bit ARM platform, for use in a modular synthesizer. The plan is then to process speech in realtime, not rendered like now.<br>
 Until then, this project is my test platform.<br>
 Have fun..
